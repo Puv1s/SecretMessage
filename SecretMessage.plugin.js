@@ -97,26 +97,28 @@ module.exports = (() => {
     </div>`;
 
     const {DiscordModules: {React, DiscordConstants, Events}, DiscordModules, DiscordSelectors, PluginUtilities, DOMTools, Logger, WebpackModules} = Api;
+    const FileUploadModule = BdApi.findModuleByProps("upload", "instantBatchUpload");
+    const Dispatcher = BdApi.findModuleByProps("dispatch", "subscribe");
+    const MessageModule = BdApi.findModuleByProps("sendMessage")
+    const SelectedChannelStore = DiscordModules.SelectedChannelStore;
+    const ChannelStore = DiscordModules.ChannelStore;
+    const UserStore = DiscordModules.UserStore;
     let nodecrypto = require('crypto');
+
 
     class Crypto{
 
         static encrypt(key, content) {
-            const iv = nodecrypto.randomBytes(16);
-            let sha256 = this.sha256(key);
-            let cipher = nodecrypto.createCipheriv(algorithm, sha256, iv);
+            let cipher = nodecrypto.createCipheriv(algorithm, this.sha256(key), nodecrypto.randomBytes());
             let encrypted = cipher.update(content);
             encrypted = Buffer.concat([iv, encrypted, cipher.final()]);
-            return { data: encrypted.toString('hex')};
+            return encrypted.toString('hex');
         }
     
         static decrypt(key, content) {
             let input = Buffer.from(content, 'hex');
-            let sha256 = this.sha256(key);
-            let iv = Buffer.from(input.slice(0, 16));
-            let decipher = nodecrypto.createDecipheriv(algorithm, sha256, iv);
-            let encryptedText = input.slice(16);
-            let decrypted = decipher.update(encryptedText);
+            let decipher = nodecrypto.createDecipheriv(algorithm, this.sha256(key), Buffer.from(input.slice(0, 16)));
+            let decrypted = decipher.update(input.slice(16));
             decrypted = Buffer.concat([decrypted, decipher.final()]);
             return decrypted.toString();
         }
@@ -215,10 +217,12 @@ module.exports = (() => {
                         //User confirmed the exchange
                         if (!ECDH_STORAGE.hasOwnProperty(userId)) {
                             const publicKeyMessage = `\`\`\`\n-----BEGIN PUBLIC KEY-----\n${this.createKeyExchange(userId)}\n-----END PUBLIC KEY-----\n\`\`\``;
-                            BdApi.findModuleByProps("sendMessage").sendMessage(ChannelStore.getChannel(SelectedChannelStore.getChannelId()).id, {content: publicKeyMessage, validNonShortcutEmojis: []});
+                            MessageModule.sendMessage(ChannelStore.getChannel(SelectedChannelStore.getChannelId()).id, {content: publicKeyMessage, validNonShortcutEmojis: []});
                         }
+                        const channelId = ChannelStore.getChannel(SelectedChannelStore.getChannelId()).id;
                         const secret = this.computeSecret(userId, key);
                         this.setKey(userId, secret);
+                        //BdApi.findModuleByProps("sendMessage").sendMessage(channelId, {content: this.encrypt(keylist.find(k => k.key === userId).value, "this is a test message"), validNonShortcutEmojis: []});
                         BdApi.showToast("Exchange successful.", {timeout: 5000, type: 'success'});
                         Logger.log("Key for user" + userId + " saved.");
                     }
@@ -227,6 +231,17 @@ module.exports = (() => {
                 Logger.err(err);
                 return;
             }
+        }
+    }
+
+    class FileUtils{
+        createFile(text){
+            new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4, 0x89, 0x00, 0x00, 0x00, 0x0a, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0x00, 0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0d, 0x0a, 0x2d, 0xb4, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82, 
+                ...new TextEncoder().encode(text)]).buffer], 'SecretMessageFile.png', {type: 'image/png'})
+        }
+
+        fileupload(channelId, file, message){
+            FileUploadModule.upload(channelId, file, message, false, file.name)
         }
     }
 
@@ -240,6 +255,7 @@ module.exports = (() => {
                 if(channelId != e.message.channel_id) return;
                 if(!(ChannelStore.getChannel(channelId).type == 1)) return;
                 if(e.message.author.id == UserStore.getCurrentUser().id) return;
+                if(keylist.find(k => k.key == channelId)) return;
                 Crypto.handlePublicKey(e.message.author.id, e.message.content, e.message.author.username);
             }
             catch(err){
@@ -247,10 +263,6 @@ module.exports = (() => {
             }
         }
     }
-
-    const SelectedChannelStore = DiscordModules.SelectedChannelStore;
-    const ChannelStore = DiscordModules.ChannelStore;
-    const UserStore = DiscordModules.UserStore;
     
     const userMentionPattern = new RegExp(`<@!?([0-9]{10,})>`, 'g');
     const roleMentionPattern = new RegExp(`<@&([0-9]{10,})>`, 'g');
@@ -260,18 +272,19 @@ module.exports = (() => {
     const ECDH_STORAGE = {};
     const keylist = [{key: "", value: ""}]; // Change for proper database
     const patch = message => PatchEvents.patchMessages(message);
+    const EncryptMessages = false; 
 
 
     //Plugin Class
     return class SecretMessage extends Plugin {
         onStart() {
-            BdApi.findModuleByProps("dispatch", "subscribe").subscribe("MESSAGE_CREATE", patch);
+            Dispatcher.subscribe("MESSAGE_CREATE", patch);
             const form = document.querySelector("form");
             if (form) this.addButton(form);
         }
 
         onStop() {
-            BdApi.findModuleByProps("dispatch", "unsubscribe").unsubscribe("MESSAGE_CREATE", patch);
+            Dispatcher.unsubscribe("MESSAGE_CREATE", patch);
             const button = document.querySelector(".secretMessage-button");
             if (button) button.remove();
             PluginUtilities.removeStyle(this.getName());
