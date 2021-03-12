@@ -1,8 +1,8 @@
 /**
  * @name SecretMessage
  * @version 0.0.1
- * @source https://github.com/Puv1s/SecretMessage/src/SecretMessage.plugin.js
- * @updateUrl https://github.com/Puv1s/SecretMessage/src/SecretMessage.plugin.js
+ * @source https://raw.githubusercontent.com/Puv1s/SecretMessage/master/SecretMessage.plugin.js
+ * @updateUrl https://raw.githubusercontent.com/Puv1s/SecretMessage/master/SecretMessage.plugin.js
  */
 /*@cc_on
 @if (@_jscript)
@@ -47,7 +47,8 @@ module.exports = (() => {
             version:"0.0.3",
             description:"Lets you send invisible text with your initial message, encrypted by E2EE.",
             github:"https://github.com/Puv1s/SecretMessage",
-            github_raw:"https://raw.githubusercontent.com/Puv1s/SecretMessage/master/SecretMessage.plugin.js"},
+            github_raw:"https://raw.githubusercontent.com/Puv1s/SecretMessage/master/SecretMessage.plugin.js"
+	},
             changelog:[
                 {
                     title:"Fixed",
