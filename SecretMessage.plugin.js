@@ -1,6 +1,6 @@
 /**
  * @name SecretMessage
- * @version 0.0.1
+ * @version 0.0.3
  * @source https://github.com/Puv1s/SecretMessage/blob/main/SecretMessage.plugin.js
  * @updateUrl https://raw.githubusercontent.com/Puv1s/SecretMessage/master/SecretMessage.plugin.js
  */
@@ -85,8 +85,8 @@ module.exports = (() => {
     } : (([Plugin, Api]) => {
         const plugin = (Plugin, Api) => {
 
-    const buttonHTML = 
-    `<div class="buttonContainer-28fw2U da-buttonContainer secretMessage-button">
+    const ExchangeButtonHTML = 
+    `<div class="buttonContainer-28fw2U da-buttonContainer secretMessage-exchange-button">
         <button aria-label="Send Secret Message" tabindex="0" type="button" class="buttonWrapper-1ZmCpA da-buttonWrapper button-38aScr da-button lookBlank-3eh9lL colorBrand-3pXr91 grow-q77ONN da-grow noFocus-2C7BQj da-noFocus">
             <div class="contents-18-Yxp da-contents button-3AYNKb da-button button-318s1X da-button">
                 <svg xmlns="http://www.w3.org/2000/svg" class="icon-3D60ES da-icon" viewBox="0 0 24 24" aria-hidden="false" fill="currentColor" width="24px" height="24px">
@@ -96,20 +96,33 @@ module.exports = (() => {
         </button>
     </div>`;
 
+    const EncryptButtonHTML = 
+    `<div class="buttonContainer-28fw2U da-buttonContainer secretMessage-encrypt-button">
+        <button aria-label="Send Secret Message" tabindex="0" type="button" class="buttonWrapper-1ZmCpA da-buttonWrapper button-38aScr da-button lookBlank-3eh9lL colorBrand-3pXr91 grow-q77ONN da-grow noFocus-2C7BQj da-noFocus">
+            <div class="contents-18-Yxp da-contents button-3AYNKb da-button button-318s1X da-button">
+                <svg xmlns="http://www.w3.org/2000/svg" class="icon-3D60ES da-icon" viewBox="0 0 24 24" aria-hidden="false" fill="currentColor" width="24px" height="24px">
+                <path xmlns="http://www.w3.org/2000/svg" fill="currentColor" d="M 19.246094 3.253906 C 18.121094 2.128906 16.710938 1.546875 15 1.5 C 13.304688 1.546875 11.878906 2.128906 10.753906 3.253906 C 9.628906 4.378906 9.058594 5.789062 9.015625 7.5 C 9.015625 7.949219 9.058594 8.386719 9.148438 8.835938 L 0 18 L 0 19.5 L 1.5 21 L 4.5 21 L 6 19.5 L 6 18 L 7.5 18 L 7.5 16.5 L 9 16.5 L 9 15 L 12 15 L 13.636719 13.335938 C 14.085938 13.453125 14.519531 13.5 15 13.5 C 16.710938 13.453125 18.121094 12.871094 19.246094 11.746094 C 20.371094 10.621094 20.953125 9.210938 21 7.5 C 20.953125 5.789062 20.371094 4.378906 19.246094 3.253906 Z M 16.5 8.070312 C 15.34375 8.070312 14.429688 7.15625 14.429688 6 C 14.429688 4.84375 15.34375 3.929688 16.5 3.929688 C 17.65625 3.929688 18.570312 4.84375 18.570312 6 C 18.570312 7.15625 17.65625 8.070312 16.5 8.070312 Z M 16.5 8.070312 "/>
+                </svg>
+            </div>
+        </button>
+    </div>`;
+
     const {DiscordModules: {React, DiscordConstants, Events}, DiscordModules, DiscordSelectors, PluginUtilities, DOMTools, Logger, WebpackModules} = Api;
     const FileUploadModule = BdApi.findModuleByProps("upload", "instantBatchUpload");
     const Dispatcher = BdApi.findModuleByProps("dispatch", "subscribe");
-    const MessageModule = BdApi.findModuleByProps("sendMessage")
+    const MessageModule = BdApi.findModuleByProps("sendMessage");
     const SelectedChannelStore = DiscordModules.SelectedChannelStore;
     const ChannelStore = DiscordModules.ChannelStore;
     const UserStore = DiscordModules.UserStore;
+    let EncryptionEnabled = false;
     let nodecrypto = require('crypto');
 
 
     class Crypto{
 
         static encrypt(key, content) {
-            let cipher = nodecrypto.createCipheriv(algorithm, this.sha256(key), nodecrypto.randomBytes());
+            let iv = nodecrypto.randomBytes(16);
+            let cipher = nodecrypto.createCipheriv(algorithm, this.sha256(key), iv);
             let encrypted = cipher.update(content);
             encrypted = Buffer.concat([iv, encrypted, cipher.final()]);
             return encrypted.toString('hex');
@@ -180,51 +193,53 @@ module.exports = (() => {
         }
 
         //Save the computed secret key used for encryption/decryption
-        static setKey(userId, key) {
+        static setKey(channelId, key) {
             const items = keylist;
-            const index = keylist.findIndex(kvp => kvp.value.key === userId);
+            const index = keylist.findIndex(kvp => kvp.value.key === channelId);
             if (index > -1) {
-                items[index].value = { key: userId, value: key };
+                items[index].value = { key: channelId, value: key };
                 return;
             }
-            keylist.push({ key: userId, value: key }); 
+            keylist.push({ key: channelId, value: key }); 
+            EncryptionEnabled = true;
         }
 
         //Generates exchange keys for current user
-        static createKeyExchange(userId) {
-            if (ECDH_STORAGE.hasOwnProperty(userId)) return null;
-            ECDH_STORAGE[userId] = this.createECDH();
+        static createKeyExchange(channelId) {
+            if (ECDH_STORAGE.hasOwnProperty(channelId)) return null;
+            ECDH_STORAGE[channelId] = this.createECDH();
             setTimeout(() => {
                 //Expire the keys after 30 seconds, if computeSecret is not called in this time window, user has to create new keypair
-                if (ECDH_STORAGE.hasOwnProperty(userId)) {
-                    delete ECDH_STORAGE[userId];
+                if (ECDH_STORAGE.hasOwnProperty(channelId)) {
+                    delete ECDH_STORAGE[channelId];
                 }
                 Logger.warn("Key exchange expired.");
                 BdApi.showToast("Key exchange expired.", {timeout: 5000, type: 'warning'});
             }, 30000);
-            return this.generateECDHKeys(ECDH_STORAGE[userId]);
+            return this.generateECDHKeys(ECDH_STORAGE[channelId]);
         }
 
-        static handlePublicKey(userId, content, username) {
+        static handlePublicKey(channelId, content, user) {
             const [tagstart, begin, key, end, tagend] = content.split('\n');
             if (begin !== '-----BEGIN PUBLIC KEY-----' || end !== '-----END PUBLIC KEY-----') return; // No key in the message
             try {
-                BdApi.showConfirmationModal("Exchange Request", `The user ${username} is requesting key exchange.`, {
+                BdApi.showConfirmationModal("Exchange Request", `The channel ${user} is requesting key exchange.`, {
                     confirmText: "Exchange",
                     cancelText: "Cancel",
                     onConfirm: () => {
 
                         //User confirmed the exchange
-                        if (!ECDH_STORAGE.hasOwnProperty(userId)) {
-                            const publicKeyMessage = `\`\`\`\n-----BEGIN PUBLIC KEY-----\n${this.createKeyExchange(userId)}\n-----END PUBLIC KEY-----\n\`\`\``;
-                            MessageModule.sendMessage(ChannelStore.getChannel(SelectedChannelStore.getChannelId()).id, {content: publicKeyMessage, validNonShortcutEmojis: []});
+                        if (!ECDH_STORAGE.hasOwnProperty(channelId)) {
+                            const publicKeyMessage = `\`\`\`\n-----BEGIN PUBLIC KEY-----\n${this.createKeyExchange(channelId)}\n-----END PUBLIC KEY-----\n\`\`\``;
+                            MessageModule.sendMessage(channelId, {content: publicKeyMessage, validNonShortcutEmojis: []});
                         }
-                        const channelId = ChannelStore.getChannel(SelectedChannelStore.getChannelId()).id;
-                        const secret = this.computeSecret(userId, key);
-                        this.setKey(userId, secret);
+                        const secret = this.computeSecret(channelId, key);
+                        this.setKey(channelId, secret);
                         //BdApi.findModuleByProps("sendMessage").sendMessage(channelId, {content: this.encrypt(keylist.find(k => k.key === userId).value, "this is a test message"), validNonShortcutEmojis: []});
                         BdApi.showToast("Exchange successful.", {timeout: 5000, type: 'success'});
-                        Logger.log("Key for user" + userId + " saved.");
+                        Logger.log("Key for channel " + channelId + " saved.");
+                        //EncryptMessages = true;
+                        //document.querySelector(".secretMessage-encrypt-button").addClass("secretMessage-button-enabled");
                     }
                 });
             } catch (err) {
@@ -236,7 +251,7 @@ module.exports = (() => {
 
     class FileUtils{
         createFile(text){
-            return new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4, 0x89, 0x00, 0x00, 0x00, 0x0a, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0x00, 0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0d, 0x0a, 0x2d, 0xb4, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82, 
+            new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4, 0x89, 0x00, 0x00, 0x00, 0x0a, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0x00, 0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0d, 0x0a, 0x2d, 0xb4, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82, 
                 ...new TextEncoder().encode(text)]).buffer], 'SecretMessageFile.png', {type: 'image/png'})
         }
 
@@ -254,9 +269,17 @@ module.exports = (() => {
                 if(!channelId) return;
                 if(channelId != e.message.channel_id) return;
                 if(!(ChannelStore.getChannel(channelId).type == 1)) return;
-                if(e.message.author.id == UserStore.getCurrentUser().id) return;
+                if(e.message.author.id == UserStore.getCurrentUser().id){
+                    /*
+                    let key = keylist.find(k => k.key == channelId)
+                    if(!e.message.content.startsWith(`\`\`\`\n-----BEGIN PUBLIC KEY-----`) && EncryptMessages && key){
+                        console.log(Crypto.encrypt(key.value, e.message.content));
+                    }
+                    */
+                    return;
+                }
                 if(keylist.find(k => k.key == channelId)) return;
-                Crypto.handlePublicKey(e.message.author.id, e.message.content, e.message.author.username);
+                Crypto.handlePublicKey(channelId, e.message.content, e.message.author.username);
             }
             catch(err){
                 Logger.err(err);
@@ -272,31 +295,44 @@ module.exports = (() => {
     const ECDH_STORAGE = {};
     const keylist = [{key: "", value: ""}]; // Change for proper database
     const patch = message => PatchEvents.patchMessages(message);
-    const EncryptMessages = false; 
+    let EncryptMessages = false; 
 
 
     //Plugin Class
     return class SecretMessage extends Plugin {
         onStart() {
+            //PluginUtilities.addStyle("secretmessage-css", ``); // Add styling
             Dispatcher.subscribe("MESSAGE_CREATE", patch);
             const form = document.querySelector("form");
-            if (form) this.addButton(form);
+            const exchangeButton = document.querySelector(".secretMessage-exchange-button");
+            const encryptButton = document.querySelector(".secretMessage-encrypt-button");
+            if (form) {
+                if (!exchangeButton) this.addButtonExchange(form);
+                if (!encryptButton) this.addButtonEncrypt(form);
+            }
+            PluginUtilities.addStyle("secretmessage-css", `
+                .secretMessage-button-enabled path{
+                    fill: #43b581;
+                }
+                `);
         }
 
         onStop() {
             Dispatcher.unsubscribe("MESSAGE_CREATE", patch);
-            const button = document.querySelector(".secretMessage-button");
-            if (button) button.remove();
+            const exchangeButton = document.querySelector(".secretMessage-exchange-button");
+            const encryptButton = document.querySelector(".secretMessage-encrypt-button");
+            if (exchangeButton) exchangeButton.remove();
+            if (encryptButton) encryptButton.remove();
             PluginUtilities.removeStyle(this.getName());
         }
 
-        addButton(form) {
-            if (form.querySelector(".secretMessage-button")) return;
-            const button = DOMTools.createElement(buttonHTML);
-            form.querySelector(ZeresPluginLibrary.DiscordSelectors.Textarea.attachButton).parent().parent().prepend(button);
+        addButtonExchange(form) {
+            if (form.querySelector(".secretMessage-exchange-button")) return;
+            const exchangeButton = DOMTools.createElement(ExchangeButtonHTML);
+            form.querySelector(ZeresPluginLibrary.DiscordSelectors.Textarea.attachButton).parent().parent().prepend(exchangeButton);
 
             //Create your pair of keys by clicking the button
-            button.addEventListener("click", () => {
+            exchangeButton.addEventListener("click", () => {
                 const channel = ChannelStore.getChannel(SelectedChannelStore.getChannelId());
                 if(!channel.type == 1) return;
                 const keyExchange = Crypto.createKeyExchange(channel.id);
@@ -307,10 +343,25 @@ module.exports = (() => {
             });
         }
 
+        addButtonEncrypt(form) {
+            if (form.querySelector(".secretMessage-encrypt-button")) return;
+            const encryptButton = DOMTools.createElement(EncryptButtonHTML);
+            form.querySelector(ZeresPluginLibrary.DiscordSelectors.Textarea.attachButton).parent().parent().prepend(encryptButton);
+
+            encryptButton.addEventListener("click", () => {
+                console.log(ZeresPluginLibrary.DiscordSelectors.Textarea);
+            });
+        }
+
         observer(e) {
             if (!e.addedNodes.length || !e.addedNodes[0] || !e.addedNodes[0].querySelector) return;
             const form = e.addedNodes[0].querySelector(DiscordSelectors.Textarea.inner);
-            if (form) this.addButton(form);
+            const exchangeButton = document.querySelector(".secretMessage-exchange-button");
+            const encryptButton = document.querySelector(".secretMessage-encrypt-button");
+            if (form) {
+                if (!exchangeButton) this.addButtonExchange(form);
+                if (!encryptButton) this.addButtonEncrypt(form);
+            }
         }
 
     };
