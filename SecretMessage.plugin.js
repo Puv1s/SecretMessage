@@ -331,18 +331,16 @@ module.exports = (() => {
                     align-items: center;
                     width: 0px;
                     overflow: hidden;
-                    transition: width 0.5s ease-out;
+                    transition: width 0s;
                     background-color: rgba(255, 255, 255, 0.05);
                     border-radius: 0px 5px 5px 0px;
                     height: 70%;
                 }
-                .secretMessage-contextMenu:before{
-                    display:none;
-                }
                 .secretMessage-openMenu{
-                    width: auto;
+                    width: 100%;
                     margin-right: 8px;
                     margin-left: 13px;
+                    transition: width 0.4s ease-in-out;
                 }
                 .secretMessage-exchange-button:before{
                     display:none;
@@ -357,7 +355,7 @@ module.exports = (() => {
                     border-style: solid;
                     border-color: transparent rgba(255, 255, 255, 0.05) transparent transparent;
                     top: 8px;
-                    left: 28px;
+                    left: 28px !important;
                 }
                 .secretMessage-button-enabled path{
                     fill: #43b581;
@@ -393,7 +391,10 @@ module.exports = (() => {
                 EncryptMessages = !EncryptMessages;
                 var file = FileUtils.createFile("testing");
                 FileUtils.fileUpload(SelectedChannelStore.getChannelId(), file, {content: "testing"});
+                */
+            });
 
+            settingsButton.addEventListener("click", () => {
                 WebpackModules.getByProps("openModal").openModal(props => {
                     return React.createElement(WebpackModules.getByProps("ModalRoot").ModalRoot, {
                         size: "large",
@@ -401,16 +402,21 @@ module.exports = (() => {
                         children: React.createElement("p", {})
                     })
                 })
-                */
             });
+
             encryptButton.addEventListener("click", (e) => {
                 if(!EncryptionEnabled && keylist.find(k => k.key == SelectedChannelStore.getChannelId())){
                     EncryptionEnabled = true;
                     encryptButton.addClass("secretMessage-button-enabled");
+                    BdApi.showToast("Encryption enabled", {timeout: 4000, type: 'warning'});
                 }
                 else if(EncryptionEnabled){
                     EncryptionEnabled = false;
                     encryptButton.removeClass("secretMessage-button-enabled");
+                    BdApi.showToast("Encryption disabled.", {timeout: 4000, type: 'warning'});
+                }
+                else{
+                    BdApi.showToast("You didn't exchange keys for this channel.", {timeout: 4000, type: 'error'});
                 }
             });
 
@@ -432,7 +438,10 @@ module.exports = (() => {
             //Create your pair of keys by clicking the button
             exchangeButton.addEventListener("click", () => {
                 const channel = ChannelStore.getChannel(SelectedChannelStore.getChannelId());
-                if(!channel.type == 1) return;
+                if(!channel.type == 1){
+                    BdApi.showToast("Can't send key into public channel.", {timeout: 4000, type: 'error'});
+                    return;
+                } 
                 const keyExchange = Crypto.createKeyExchange(channel.id);
                 const publicKeyMessage = `\`\`\`\n-----BEGIN PUBLIC KEY-----\n${keyExchange}\n-----END PUBLIC KEY-----\n\`\`\``;
                 BdApi.findModuleByProps("sendMessage").sendMessage(channel.id, {content: publicKeyMessage, validNonShortcutEmojis: []});
