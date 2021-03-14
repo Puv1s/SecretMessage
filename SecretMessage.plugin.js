@@ -116,7 +116,54 @@ module.exports = (() => {
         </div>
     </div>`;
 
-    const {DiscordModules: {React, DiscordConstants, Events}, DiscordModules, DiscordSelectors, PluginUtilities, DOMTools, Logger, WebpackModules} = Api;
+    const PluginCSS = 
+    `
+    .secretMessage-buttonArea{
+        display:flex;
+        align-items: center;
+        padding-right: 8px;
+        padding-left: 5px;
+    }
+    .secretMessage-contextMenu{
+        display:flex;
+        align-items: center;
+        width: 0px;
+        overflow: hidden;
+        transition: width 0s;
+        background-color: rgba(255, 255, 255, 0.05);
+        border-radius: 0px 5px 5px 0px;
+        height: 70%;
+    }
+    .secretMessage-openMenu{
+        width: 100%;
+        margin-right: 8px;
+        margin-left: 13px;
+        transition: width 0.4s ease-in-out;
+    }
+    .secretMessage-exchange-button:before{
+        display:none;
+    }
+    .secretMessage-openMenu .secretMessage-exchange-button:before{
+        display: block !important;
+        content: "";
+        position: absolute;
+        width: 0;
+        height: 0;
+        border-width: 18px;
+        border-style: solid;
+        border-color: transparent rgba(255, 255, 255, 0.05) transparent transparent;
+        top: 8px;
+        left: 28px !important;
+    }
+    .secretMessage-button-enabled path{
+        fill: #43b581;
+    }
+    .secretMessage-encrypt-button{
+        z-index: 100;
+    }
+    `;
+
+    const {DiscordModules: {React, DiscordConstants, Events}, DiscordModules, DiscordSelectors, PluginUtilities, DOMTools, Logger, WebpackModules, Patcher} = Api;
     const FileUploadModule = BdApi.findModuleByProps("upload", "instantBatchUpload");
     const Dispatcher = BdApi.findModuleByProps("dispatch", "subscribe");
     const MessageModule = BdApi.findModuleByProps("sendMessage");
@@ -134,7 +181,7 @@ module.exports = (() => {
             let cipher = nodecrypto.createCipheriv(algorithm, this.sha256(key), iv);
             let encrypted = cipher.update(content);
             encrypted = Buffer.concat([iv, encrypted, cipher.final()]);
-            return encrypted.toString('hex');
+            return CryptoPrefix + encrypted.toString('hex');
         }
     
         static decrypt(key, content) {
@@ -142,7 +189,7 @@ module.exports = (() => {
             let decipher = nodecrypto.createDecipheriv(algorithm, this.sha256(key), Buffer.from(input.slice(0, 16)));
             let decrypted = decipher.update(input.slice(16));
             decrypted = Buffer.concat([decrypted, decipher.final()]);
-            return decrypted.toString();
+            return decrypted.toString().remove(CryptoPrefix);
         }
     
         static async createHmac(key, data, algorithm = 'sha256') {
@@ -221,8 +268,8 @@ module.exports = (() => {
                 if (ECDH_STORAGE.hasOwnProperty(channelId)) {
                     delete ECDH_STORAGE[channelId];
                 }
-                Logger.warn("Key exchange expired.");
-                BdApi.showToast("Key exchange expired.", {timeout: 5000, type: 'warning'});
+                //Logger.warn("Key exchange expired.");
+                //BdApi.showToast("Key exchange expired.", {timeout: 5000, type: 'warning'});
             }, 30000);
             return this.generateECDHKeys(ECDH_STORAGE[channelId]);
         }
@@ -270,24 +317,16 @@ module.exports = (() => {
         }
     }
 
-    class PatchEvents{
+    class PatcherFunctions{
         
         //If recieved message in current DM channel is a Key exchange, process by handlePublicKey
-        static patchMessages = e => {
+        static patchRecievedMessages = e => {
             try{
+                if(e.message.author.id == UserStore.getCurrentUser().id) return;
                 let channelId = SelectedChannelStore.getChannelId();
                 if(!channelId) return;
                 if(channelId != e.message.channel_id) return;
                 if(!(ChannelStore.getChannel(channelId).type == 1)) return;
-                if(e.message.author.id == UserStore.getCurrentUser().id){
-                    /*
-                    let key = keylist.find(k => k.key == channelId)
-                    if(!e.message.content.startsWith(`\`\`\`\n-----BEGIN PUBLIC KEY-----`) && EncryptMessages && key){
-                        console.log(Crypto.encrypt(key.value, e.message.content));
-                    }
-                    */
-                    return;
-                }
                 if(keylist.find(k => k.key == channelId)) return;
                 Crypto.handlePublicKey(channelId, e.message.content, e.message.author.username);
             }
@@ -295,16 +334,25 @@ module.exports = (() => {
                 Logger.err(err);
             }
         }
+
+        static patchSendMessage = (message) => {
+            const key = keylist.find(k => k.key == message[0]);
+            let content = message[1].content;
+            if(!EncryptionEnabled || !key) return;
+            message[1].content = CryptoPrefix + Crypto.encrypt(key.value, content);
+        }
     }
     
     const userMentionPattern = new RegExp(`<@!?([0-9]{10,})>`, 'g');
     const roleMentionPattern = new RegExp(`<@&([0-9]{10,})>`, 'g');
     const everyoneMentionPattern = new RegExp(`(?:\\s+|^)@everyone(?:\\s+|$)`);
 
+    const CryptoPrefix = "$:";
     const algorithm = 'aes-256-cbc';
     const ECDH_STORAGE = {};
     const keylist = [{key: "", value: ""}]; // Change for proper database
-    const patch = message => PatchEvents.patchMessages(message);
+    const patchRecieve = message => PatcherFunctions.patchRecievedMessages(message);
+    const patchSend = (e, t, n, r) => PatcherFunctions.patchSendMessage(t);
     let EncryptMessages = false; 
     let contextMenuBluring = false;
 
@@ -312,62 +360,18 @@ module.exports = (() => {
     //Plugin Class
     return class SecretMessage extends Plugin {
         onStart() {
-            //PluginUtilities.addStyle("secretmessage-css", ``); // Add styling
-            Dispatcher.subscribe("MESSAGE_CREATE", patch);
+            Patcher.before(BdApi.findModuleByProps("sendMessage"), "sendMessage", patchSend);
+            Dispatcher.subscribe("MESSAGE_CREATE", patchRecieve);
             const form = document.querySelector("form");
             const buttonArea = document.querySelector(".secretMessage-buttonArea");
             if (form) {
                 if (!buttonArea) this.addButtonArea(form);
             }
-            PluginUtilities.addStyle("secretmessage-css", `
-                .secretMessage-buttonArea{
-                    display:flex;
-                    align-items: center;
-                    padding-right: 8px;
-                    padding-left: 5px;
-                }
-                .secretMessage-contextMenu{
-                    display:flex;
-                    align-items: center;
-                    width: 0px;
-                    overflow: hidden;
-                    transition: width 0s;
-                    background-color: rgba(255, 255, 255, 0.05);
-                    border-radius: 0px 5px 5px 0px;
-                    height: 70%;
-                }
-                .secretMessage-openMenu{
-                    width: 100%;
-                    margin-right: 8px;
-                    margin-left: 13px;
-                    transition: width 0.4s ease-in-out;
-                }
-                .secretMessage-exchange-button:before{
-                    display:none;
-                }
-                .secretMessage-openMenu .secretMessage-exchange-button:before{
-                    display: block !important;
-                    content: "";
-                    position: absolute;
-                    width: 0;
-                    height: 0;
-                    border-width: 18px;
-                    border-style: solid;
-                    border-color: transparent rgba(255, 255, 255, 0.05) transparent transparent;
-                    top: 8px;
-                    left: 28px !important;
-                }
-                .secretMessage-button-enabled path{
-                    fill: #43b581;
-                }
-                .secretMessage-encrypt-button{
-                    z-index: 100;
-                }
-                `);
+            PluginUtilities.addStyle("secretmessage-css", PluginCSS);
         }
 
         onStop() {
-            Dispatcher.unsubscribe("MESSAGE_CREATE", patch);
+            Dispatcher.unsubscribe("MESSAGE_CREATE", patchRecieve);
             const buttonArea = document.querySelector(".secretMessage-buttonArea");
             if (buttonArea) buttonArea.remove();
             PluginUtilities.removeStyle(this.getName());
