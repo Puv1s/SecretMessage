@@ -163,16 +163,64 @@ module.exports = (() => {
     }
     `;
 
-    const {DiscordModules: {React, DiscordConstants, Events}, DiscordModules, DiscordSelectors, PluginUtilities, DOMTools, Logger, WebpackModules, Patcher} = Api;
+    const {DiscordModules: {React, DiscordConstants, Events}, ReactComponents, DiscordModules, DiscordSelectors, PluginUtilities, DOMTools, Logger, WebpackModules, Patcher} = Api;
     const FileUploadModule = BdApi.findModuleByProps("upload", "instantBatchUpload");
     const Dispatcher = BdApi.findModuleByProps("dispatch", "subscribe");
-    const MessageModule = BdApi.findModuleByProps("sendMessage");
+    const SendMessageModule = BdApi.findModuleByProps("sendMessage");
+    const MessageComponent = WebpackModules.find(m => m.type?.displayName === "MessageContent");
     const SelectedChannelStore = DiscordModules.SelectedChannelStore;
     const ChannelStore = DiscordModules.ChannelStore;
     const UserStore = DiscordModules.UserStore;
     let EncryptionEnabled = false;
+    const zwsCharacters = ["\u034F", "\u180e", "\u200b", "\u200c", "\u200d"];
     let nodecrypto = require('crypto');
 
+    class CompressExtensions{
+
+        static zeroPad(num) {
+            return "000".slice(String(num).length) + num;
+        }
+
+        static stringToBinary(str, spaceSeparatedOctets) {
+            return str.replace(/[\s\S]/g, (str) => {
+                str = this.zeroPad(str.charCodeAt().toString(5));
+                return str;
+            });
+        }
+
+        static binaryToString(str) {
+            // Removes the spaces from the binary string
+            str = str.replace(/\s+/g, "");
+            // Pretty (correct) print binary (add a space every 8 characters)
+            str = str.match(/.{1,3}/g).join(" ");
+
+            var newBinary = str.split(" ");
+            var binaryCode = [];
+
+            for (var i = 0; i < newBinary.length; i++) {
+                binaryCode.push(String.fromCharCode(parseInt(newBinary[i], 5)));
+            }
+
+            return binaryCode.join("");
+        }
+
+        static stringToZWS(string) {
+            let finalString = "";
+            let binary = this.stringToBinary(string);
+            for (let i = 0; i < binary.length; i++) {
+                finalString += zwsCharacters[parseInt(binary[i])];
+            }
+            return finalString;
+        }
+
+        static zwsToString(string) {
+            let finalString = "";
+            for (let i = 0; i < string.length; i++) {
+                finalString += zwsCharacters.indexOf(string[i]);
+            }
+            return this.binaryToString(finalString);
+        }
+    }
 
     class Crypto{
 
@@ -185,11 +233,12 @@ module.exports = (() => {
         }
     
         static decrypt(key, content) {
-            let input = Buffer.from(content, 'hex');
+            let input = content.replace(CryptoPrefix, '');
+            input = Buffer.from(input, 'hex');
             let decipher = nodecrypto.createDecipheriv(algorithm, this.sha256(key), Buffer.from(input.slice(0, 16)));
             let decrypted = decipher.update(input.slice(16));
             decrypted = Buffer.concat([decrypted, decipher.final()]);
-            return decrypted.toString().remove(CryptoPrefix);
+            return decrypted.toString();
         }
     
         static async createHmac(key, data, algorithm = 'sha256') {
@@ -286,7 +335,7 @@ module.exports = (() => {
                         //User confirmed the exchange
                         if (!ECDH_STORAGE.hasOwnProperty(channelId)) {
                             const publicKeyMessage = `\`\`\`\n-----BEGIN PUBLIC KEY-----\n${this.createKeyExchange(channelId)}\n-----END PUBLIC KEY-----\n\`\`\``;
-                            MessageModule.sendMessage(channelId, {content: publicKeyMessage, validNonShortcutEmojis: []});
+                            SendMessageModule.sendMessage(channelId, {content: publicKeyMessage, validNonShortcutEmojis: []});
                         }
                         const secret = this.computeSecret(channelId, key);
                         this.setKey(channelId, secret);
@@ -309,7 +358,7 @@ module.exports = (() => {
         }
 
         static extractFromFile(file, prefix){
-            return Buffer.from(file).slice(67).remove(prefix).toString();
+            return Buffer.from(file).slice(67).replace(prefix, '').toString();
         }
 
         static fileUpload(channelId, file, message){
@@ -320,8 +369,8 @@ module.exports = (() => {
     class PatcherFunctions{
         
         //If recieved message in current DM channel is a Key exchange, process by handlePublicKey
-        static patchRecievedMessages = e => {
-            try{
+        static patchRecievedMessage = e => {
+           try{
                 if(e.message.author.id == UserStore.getCurrentUser().id) return;
                 let channelId = SelectedChannelStore.getChannelId();
                 if(!channelId) return;
@@ -335,11 +384,33 @@ module.exports = (() => {
             }
         }
 
-        static patchSendMessage = (message) => {
-            const key = keylist.find(k => k.key == message[0]);
-            let content = message[1].content;
+        //Decrypts messages before render
+        static patchRenderMessage = e => {
+            let prop = e[0];
+            console.log(e[0].content);
+           try{
+                let key = keylist.find(k => k.key == prop.message.channel_id);
+                if(!key) return;
+                if (typeof e[0].content[0] !== 'string') return;
+                if (!e[0].content[0].startsWith('$:')) return;
+                let decrypt;
+                try {
+                    decrypt = Crypto.decrypt(key.value, e[0].content[0]);
+                } catch (err) { return } // Ignore errors such as non empty
+                e[0].content[0] = decrypt;
+            }
+            catch(err){
+                Logger.err(err);
+            }
+        }
+
+        static patchSendMessage = e => {
+            let channelId = e[0];
+            let message = e[1];
+            const key = keylist.find(k => k.key == channelId);
+            let content = message.content;
             if(!EncryptionEnabled || !key) return;
-            message[1].content = CryptoPrefix + Crypto.encrypt(key.value, content);
+            message.content = Crypto.encrypt(key.value, content);
         }
     }
     
@@ -351,16 +422,18 @@ module.exports = (() => {
     const algorithm = 'aes-256-cbc';
     const ECDH_STORAGE = {};
     const keylist = [{key: "", value: ""}]; // Change for proper database
-    const patchRecieve = message => PatcherFunctions.patchRecievedMessages(message);
-    const patchSend = (e, t, n, r) => PatcherFunctions.patchSendMessage(t);
-    let EncryptMessages = false; 
-    let contextMenuBluring = false;
 
+    const patchRecieve = message => PatcherFunctions.patchRecievedMessage(message);
+    const patchRender = (e, t, n, r) => PatcherFunctions.patchRenderMessage(t);
+    const patchSend = (e, t, n, r) => PatcherFunctions.patchSendMessage(t);
+
+    let EncryptMessages = false; 
 
     //Plugin Class
     return class SecretMessage extends Plugin {
         onStart() {
-            Patcher.before(BdApi.findModuleByProps("sendMessage"), "sendMessage", patchSend);
+            Patcher.before(MessageComponent, "type", patchRender);
+            Patcher.before(SendMessageModule, "sendMessage", patchSend);
             Dispatcher.subscribe("MESSAGE_CREATE", patchRecieve);
             const form = document.querySelector("form");
             const buttonArea = document.querySelector(".secretMessage-buttonArea");
@@ -390,13 +463,7 @@ module.exports = (() => {
             const exchangeButton = form.querySelector(".secretMessage-exchange-button");
             const settingsButton = form.querySelector(".secretMessage-settings-button");
 
-            encryptButton.addEventListener("click", () => {
-                /*
-                EncryptMessages = !EncryptMessages;
-                var file = FileUtils.createFile("testing");
-                FileUtils.fileUpload(SelectedChannelStore.getChannelId(), file, {content: "testing"});
-                */
-            });
+            if(EncryptionEnabled) encryptButton.addClass("secretMessage-button-enabled");
 
             settingsButton.addEventListener("click", () => {
                 WebpackModules.getByProps("openModal").openModal(props => {
@@ -409,18 +476,15 @@ module.exports = (() => {
             });
 
             encryptButton.addEventListener("click", (e) => {
-                if(!EncryptionEnabled && keylist.find(k => k.key == SelectedChannelStore.getChannelId())){
+                if(!EncryptionEnabled){
                     EncryptionEnabled = true;
                     encryptButton.addClass("secretMessage-button-enabled");
                     BdApi.showToast("Encryption enabled", {timeout: 4000, type: 'warning'});
                 }
-                else if(EncryptionEnabled){
+                else{
                     EncryptionEnabled = false;
                     encryptButton.removeClass("secretMessage-button-enabled");
                     BdApi.showToast("Encryption disabled.", {timeout: 4000, type: 'warning'});
-                }
-                else{
-                    BdApi.showToast("You didn't exchange keys for this channel.", {timeout: 4000, type: 'error'});
                 }
             });
 
@@ -441,7 +505,11 @@ module.exports = (() => {
 
             //Create your pair of keys by clicking the button
             exchangeButton.addEventListener("click", () => {
-                const channel = ChannelStore.getChannel(SelectedChannelStore.getChannelId());
+                let channelId = SelectedChannelStore.getChannelId();
+                if(EncryptionEnabled || keylist.find(k => k.key == channelId)){
+
+                }
+                const channel = ChannelStore.getChannel(channelId);
                 if(!channel.type == 1){
                     BdApi.showToast("Can't send key into public channel.", {timeout: 4000, type: 'error'});
                     return;
@@ -459,8 +527,14 @@ module.exports = (() => {
             if (!e.addedNodes.length || !e.addedNodes[0] || !e.addedNodes[0].querySelector) return;
             const form = e.addedNodes[0].querySelector(DiscordSelectors.Textarea.inner);
             const buttonArea = document.querySelector(".secretMessage-buttonArea");
+            const encryptButton = document.querySelector(".secretMessage-encrypt-button");
             if (form) {
                 if (!buttonArea) this.addButtonArea(form);
+                if(encryptButton){
+                    if(EncryptionEnabled && !keylist.find(k => k.key == SelectedChannelStore.getChannelId())){
+                        encryptButton.removeClass("secretMessage-button-enabled");
+                    }
+                }
             }
         }
 
