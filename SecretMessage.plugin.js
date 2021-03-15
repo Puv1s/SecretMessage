@@ -387,7 +387,6 @@ module.exports = (() => {
         //Decrypts messages before render
         static patchRenderMessage = e => {
             let prop = e[0];
-            console.log(e[0].content);
            try{
                 let key = keylist.find(k => k.key == prop.message.channel_id);
                 if(!key) return;
