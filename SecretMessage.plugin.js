@@ -59,6 +59,7 @@ module.exports = (() => {
                     ]
                 }
             ],
+            
             main:"index.js"
         };
 
@@ -174,6 +175,7 @@ module.exports = (() => {
     let EncryptionEnabled = false;
     const zwsCharacters = ["\u034F", "\u180e", "\u200b", "\u200c", "\u200d"];
     let nodecrypto = require('crypto');
+    let machineUuid = require("machine-uuid");
 
     class CompressExtensions{
 
@@ -224,16 +226,16 @@ module.exports = (() => {
 
     class Crypto{
 
-        static encrypt(key, content) {
+        static encrypt(key, content, prefix = '$:') {
             let iv = nodecrypto.randomBytes(16);
             let cipher = nodecrypto.createCipheriv(algorithm, this.sha256(key), iv);
             let encrypted = cipher.update(content);
             encrypted = Buffer.concat([iv, encrypted, cipher.final()]);
-            return CryptoPrefix + encrypted.toString('hex');
+            return prefix + encrypted.toString('hex');
         }
     
-        static decrypt(key, content) {
-            let input = content.replace(CryptoPrefix, '');
+        static decrypt(key, content, prefix = '$:') {
+            let input = content.replace(prefix, '');
             input = Buffer.from(input, 'hex');
             let decipher = nodecrypto.createDecipheriv(algorithm, this.sha256(key), Buffer.from(input.slice(0, 16)));
             let decrypted = decipher.update(input.slice(16));
@@ -299,13 +301,8 @@ module.exports = (() => {
 
         //Save the computed secret key used for encryption/decryption
         static setKey(channelId, key) {
-            const items = keylist;
-            const index = keylist.find(k => k.key == channelId)
-            if (index > -1) {
-                items[index].value = { key: channelId, value: key };
-                return;
-            }
-            keylist.push({ key: channelId, value: key }); 
+            database.keys[channelId] = key;
+            machineUuid().then((uuid)=> this.saveDatabase(Crypto.sha256(uuid).toString('hex')));
         }
 
         //Generates exchange keys for current user
@@ -349,6 +346,31 @@ module.exports = (() => {
                 return;
             }
         }
+
+        static loadDatabase(uuid){
+            let db = BdApi.getData(config.info.name, "kvp_db");
+            if(db){
+               try{
+                    database = JSON.parse(Crypto.decrypt(uuid, db, '#DB:'));
+               }
+               catch (err) { return }
+            }
+            else{
+                database = {
+                    keys:{
+                    },
+                    defaults:{
+                        users:{},
+                        channels:{}
+                    }
+                }
+            }
+        }
+
+        static saveDatabase(uuid){
+            BdApi.saveData(config.info.name, "kvp_db", Crypto.encrypt(uuid, JSON.stringify(database), '#DB:'));
+        }
+
     }
 
     class FileUtils{
@@ -376,7 +398,7 @@ module.exports = (() => {
                 if(!channelId) return;
                 if(channelId != e.message.channel_id) return;
                 if(!(ChannelStore.getChannel(channelId).type == 1)) return;
-                if(keylist.find(k => k.key == channelId)) return;
+                if(database.keys[channelId]) return;
                 Crypto.handlePublicKey(channelId, e.message.content, e.message.author.username);
             }
             catch(err){
@@ -388,13 +410,13 @@ module.exports = (() => {
         static patchRenderMessage = e => {
             let prop = e[0];
            try{
-                let key = keylist.find(k => k.key == prop.message.channel_id);
+                let key = database.keys[prop.message.channel_id];   
                 if(!key) return;
                 if (typeof e[0].content[0] !== 'string') return;
                 if (!e[0].content[0].startsWith('$:')) return;
                 let decrypt;
                 try {
-                    decrypt = Crypto.decrypt(key.value, e[0].content[0]);
+                    decrypt = Crypto.decrypt(key, e[0].content[0]);
                 } catch (err) { return } // Ignore errors such as non empty
                 e[0].content[0] = decrypt;
             }
@@ -406,21 +428,19 @@ module.exports = (() => {
         static patchSendMessage = e => {
             let channelId = e[0];
             let message = e[1];
-            const key = keylist.find(k => k.key == channelId);
+            const key = database.keys[channelId];
             let content = message.content;
             if(!EncryptionEnabled || !key) return;
-            message.content = Crypto.encrypt(key.value, content);
+            message.content = Crypto.encrypt(key, content);
         }
     }
     
     const userMentionPattern = new RegExp(`<@!?([0-9]{10,})>`, 'g');
     const roleMentionPattern = new RegExp(`<@&([0-9]{10,})>`, 'g');
     const everyoneMentionPattern = new RegExp(`(?:\\s+|^)@everyone(?:\\s+|$)`);
-
-    const CryptoPrefix = "$:";
     const algorithm = 'aes-256-cbc';
     const ECDH_STORAGE = {};
-    const keylist = [{key: "", value: ""}]; // Change for proper database
+    let database = {};
 
     const patchRecieve = message => PatcherFunctions.patchRecievedMessage(message);
     const patchRender = (e, t, n, r) => PatcherFunctions.patchRenderMessage(t);
@@ -430,7 +450,9 @@ module.exports = (() => {
 
     //Plugin Class
     return class SecretMessage extends Plugin {
+
         onStart() {
+            machineUuid().then((uuid)=> Crypto.loadDatabase(Crypto.sha256(uuid).toString('hex')));
             Patcher.before(MessageComponent, "type", patchRender);
             Patcher.before(SendMessageModule, "sendMessage", patchSend);
             Dispatcher.subscribe("MESSAGE_CREATE", patchRecieve);
@@ -505,7 +527,7 @@ module.exports = (() => {
             //Create your pair of keys by clicking the button
             exchangeButton.addEventListener("click", () => {
                 let channelId = SelectedChannelStore.getChannelId();
-                if(EncryptionEnabled || keylist.find(k => k.key == channelId)){
+                if(EncryptionEnabled || database.keys[channelId]){
 
                 }
                 const channel = ChannelStore.getChannel(channelId);
@@ -530,7 +552,7 @@ module.exports = (() => {
             if (form) {
                 if (!buttonArea) this.addButtonArea(form);
                 if(encryptButton){
-                    if(EncryptionEnabled && !keylist.find(k => k.key == SelectedChannelStore.getChannelId())){
+                    if(EncryptionEnabled && database.keys[SelectedChannelStore.getChannelId()]){
                         encryptButton.removeClass("secretMessage-button-enabled");
                     }
                 }
