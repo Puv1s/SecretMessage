@@ -165,13 +165,24 @@ module.exports = (() => {
     `;
 
     const {DiscordModules: {React, DiscordConstants, Events}, ReactComponents, DiscordModules, DiscordSelectors, PluginUtilities, DOMTools, Logger, WebpackModules, Patcher} = Api;
+
     const FileUploadModule = BdApi.findModuleByProps("upload", "instantBatchUpload");
     const Dispatcher = BdApi.findModuleByProps("dispatch", "subscribe");
     const SendMessageModule = BdApi.findModuleByProps("sendMessage");
     const MessageComponent = WebpackModules.find(m => m.type?.displayName === "MessageContent");
+    const ReactModal = WebpackModules.getByProps("ModalRoot");
+    const ReactFlex = WebpackModules.findByDisplayName("Flex");
+    const ReactFormItem = WebpackModules.findByDisplayName("FormItem");
+    const ReactFormTitle = WebpackModules.findByDisplayName("FormTitle");
+    const ReactFormDivider = WebpackModules.findByDisplayName("FormDivider");
+    const ReactInput = WebpackModules.findByDisplayName("TextInput");
+    const ReactText = WebpackModules.findByDisplayName("Text");
+
     const SelectedChannelStore = DiscordModules.SelectedChannelStore;
     const ChannelStore = DiscordModules.ChannelStore;
     const UserStore = DiscordModules.UserStore;
+    const MessageStore = DiscordModules.MessageStore;
+
     let EncryptionEnabled = false;
     const zwsCharacters = ["\u034F", "\u180e", "\u200b", "\u200c", "\u200d"];
     let nodecrypto = require('crypto');
@@ -305,6 +316,10 @@ module.exports = (() => {
             machineUuid().then((uuid)=> this.saveDatabase(Crypto.sha256(uuid).toString('hex')));
         }
 
+        static removeKey(channelId){
+            delete database.keys[channelId];
+        }
+
         //Generates exchange keys for current user
         static createKeyExchange(channelId) {
             if (ECDH_STORAGE.hasOwnProperty(channelId)) return null;
@@ -320,9 +335,14 @@ module.exports = (() => {
             return this.generateECDHKeys(ECDH_STORAGE[channelId]);
         }
 
-        static handlePublicKey(channelId, content, user) {
+        static handlePublicKey(channelId, content, user, isPublic) {
             const [tagstart, begin, key, end, tagend] = content.split('\n');
             if (begin !== '-----BEGIN PUBLIC KEY-----' || end !== '-----END PUBLIC KEY-----') return; // No key in the message
+            if(isPublic) {
+                this.setKey(channelId, Buffer.from(key, 'base64').toString('hex'));
+                BdApi.showToast("Exchange successful.", {timeout: 5000, type: 'success'});
+                Logger.log("Key for channel " + channelId + " saved.");
+            }
             try {
                 BdApi.showConfirmationModal("Exchange Request", `The channel ${user} is requesting key exchange.`, {
                     confirmText: "Exchange",
@@ -338,7 +358,6 @@ module.exports = (() => {
                         this.setKey(channelId, secret);
                         BdApi.showToast("Exchange successful.", {timeout: 5000, type: 'success'});
                         Logger.log("Key for channel " + channelId + " saved.");
-                        //document.querySelector(".secretMessage-encrypt-button").addClass("secretMessage-button-enabled");
                     }
                 });
             } catch (err) {
@@ -389,7 +408,18 @@ module.exports = (() => {
     }
 
     class PatcherFunctions{
-        
+
+        static updateMessage(channelId) {
+            const messages = MessageStore.getMessages(channelId);
+            if(!messages._array?.length) return;
+            for(const message of messages._array) {
+              DiscordModules.Dispatcher.dispatch({
+                type: "MESSAGE_UPDATE",
+                message: message
+              });
+            }
+        }
+
         //If recieved message in current DM channel is a Key exchange, process by handlePublicKey
         static patchRecievedMessage = e => {
            try{
@@ -397,9 +427,12 @@ module.exports = (() => {
                 let channelId = SelectedChannelStore.getChannelId();
                 if(!channelId) return;
                 if(channelId != e.message.channel_id) return;
-                if(!(ChannelStore.getChannel(channelId).type == 1)) return;
                 if(database.keys[channelId]) return;
-                Crypto.handlePublicKey(channelId, e.message.content, e.message.author.username);
+                if(!(ChannelStore.getChannel(channelId).type == 1)) {
+                     Crypto.handlePublicKey(channelId, e.message.content, e.message.author.username, true);
+                }
+                   
+                Crypto.handlePublicKey(channelId, e.message.content, e.message.author.username, false);
             }
             catch(err){
                 Logger.err(err);
@@ -451,11 +484,13 @@ module.exports = (() => {
     //Plugin Class
     return class SecretMessage extends Plugin {
 
-        onStart() {
-            machineUuid().then((uuid)=> Crypto.loadDatabase(Crypto.sha256(uuid).toString('hex')));
+        async onStart() {
+            let uuid = await machineUuid();
+            await Crypto.loadDatabase(Crypto.sha256(uuid).toString('hex'));
             Patcher.before(MessageComponent, "type", patchRender);
             Patcher.before(SendMessageModule, "sendMessage", patchSend);
             Dispatcher.subscribe("MESSAGE_CREATE", patchRecieve);
+            PatcherFunctions.updateMessage(SelectedChannelStore.getChannelId());
             const form = document.querySelector("form");
             const buttonArea = document.querySelector(".secretMessage-buttonArea");
             if (form) {
@@ -487,13 +522,7 @@ module.exports = (() => {
             if(EncryptionEnabled) encryptButton.addClass("secretMessage-button-enabled");
 
             settingsButton.addEventListener("click", () => {
-                WebpackModules.getByProps("openModal").openModal(props => {
-                    return React.createElement(WebpackModules.getByProps("ModalRoot").ModalRoot, {
-                        size: "large",
-                        transitionState: props.transitionState,
-                        children: React.createElement("p", {})
-                    })
-                })
+                this.openSettingsModal();
             });
 
             encryptButton.addEventListener("click", (e) => {
@@ -527,8 +556,9 @@ module.exports = (() => {
             //Create your pair of keys by clicking the button
             exchangeButton.addEventListener("click", () => {
                 let channelId = SelectedChannelStore.getChannelId();
-                if(EncryptionEnabled || database.keys[channelId]){
-
+                if(database.keys[channelId]) {
+                    BdApi.showToast("Already exchanged keys for this channel.\nRemove the key from database first.", {timeout: 8000, type: 'error'});
+                    return;
                 }
                 const channel = ChannelStore.getChannel(channelId);
                 if(!channel.type == 1){
@@ -542,6 +572,152 @@ module.exports = (() => {
                 BdApi.showToast("Key exchange started.", {timeout: 5000, type: 'info'});
             });
 
+        }
+
+        openSettingsModal(){
+            let formItems = [];
+            for (const [key, value] of Object.entries(database.keys)) {
+                formItems.push(
+                    React.createElement(ReactFlex, {
+                        basis: "auto",
+                        grow: 1,
+                        shrink: 1,
+                        children:[
+                            React.createElement(ReactFlex.Child, {
+                                basis: "50%",
+                                grow: 1,
+                                shrink: 1,
+                                children:
+                                    React.createElement(ReactFormItem, {
+                                        className: "flexChild-faoVW3",
+                                        children:[
+                                            React.createElement(ReactInput, {
+                                                disabled: true,
+                                                type: "text",
+                                                value: key
+                                            })
+                                        ]
+                                    })
+                            }),
+                            React.createElement(ReactFlex.Child, {
+                                basis: "50%",
+                                grow: 1,
+                                shrink: 1,
+                                children:
+                                    React.createElement(ReactFormItem, {
+                                        children:[
+                                            React.createElement(ReactInput, {
+                                                disabled: true,
+                                                type: "password",
+                                                value: value
+                                            })
+                                        ]
+                                    })
+                            }),
+                        ]
+                    }),
+                    React.createElement(ReactFormDivider, {
+                        className: "marginBottom20-32qID7 marginTop20-3TxNs6"
+                    })
+                )
+            }
+
+            WebpackModules.getByProps("openModal").openModal(props => {
+                return React.createElement(ReactModal.ModalRoot, {
+                    size: "large",
+                    transitionState: props.transitionState,
+                    children: [
+                        React.createElement(ReactModal.ModalHeader, {
+                            className: "header-3ydO_m",
+                            separator: false,
+                            children: [
+                                React.createElement(ReactFlex, {
+                                    align: "alignCenter-1dQNNs",
+                                    basis: "auto",
+                                    className: "header-1TKi98 header-3bB_GQ",
+                                    direction: "horizontal-1ae9ci horizontal-2EEEnY flex-1O1GKY directionRow-3v3tfG",
+                                    grow: 0,
+                                    justify: "justifyStart-2NDFzi",
+                                    shrink: 0,
+                                    wrap: "noWrap-3jynv6",
+                                    children: [
+                                        React.createElement(ReactText, {
+                                            children: "Key Management",
+                                            className: "title-33m_XM",
+                                            color: "colorHeaderPrimary-26Jzh-",
+                                            size: "size24-RIRrxO"
+                                        }),
+                                        React.createElement(ReactText, {
+                                            children: "Manage your exchanged shared keys.",
+                                            className: "subtitle-1DRiTc",
+                                            color: "colorHeaderSecondary-3Sp3Ft",
+                                            size: "size16-1P40sf"
+                                        }),
+                                    ]
+                                }),
+                                React.createElement(ReactModal.ModalCloseButton, {
+                                    className: "modalCloseButton-nA1JXv",
+                                    onClick: props.onClose
+                                }),
+                            ]
+                        }),
+                        React.createElement(ReactModal.ModalContent, {
+                            className:"content-1AKki_",
+                            children: 
+                                React.createElement(ReactFlex, {
+                                    basis: "auto",
+                                    grow: 1,
+                                    shrink: 1,
+                                    direction: "vertical-V37hAW flex-1O1GKY directionColumn-35P_nr",
+                                    children: [
+                                        React.createElement(ReactFlex, {
+                                            basis: "auto",
+                                            grow: 1,
+                                            shrink: 1,
+                                            children:[
+                                                React.createElement(ReactFlex.Child, {
+                                                    basis: "50%",
+                                                    grow: 1,
+                                                    shrink: 1,
+                                                    children:
+                                                        React.createElement(ReactFormItem, {
+                                                            className: "flexChild-faoVW3",
+                                                            children:
+                                                                React.createElement(ReactFormTitle, {
+                                                                    children: 
+                                                                    React.createElement(ReactText, {
+                                                                        className: "h5-18_1nd title-3sZWYQ defaultMarginh5-2mL-bP",
+                                                                        tag: "h5",
+                                                                        children: ["Channel ID", null, null]
+                                                                    })
+                                                                })
+                                                        })
+                                                }),
+                                                React.createElement(ReactFlex.Child, {
+                                                    basis: "50%",
+                                                    grow: 1,
+                                                    shrink: 1,
+                                                    children:
+                                                        React.createElement(ReactFormItem, {
+                                                            children:
+                                                                React.createElement(ReactFormTitle, {
+                                                                    children: React.createElement(ReactText, {
+                                                                        className: "h5-18_1nd title-3sZWYQ defaultMarginh5-2mL-bP",
+                                                                        tag: "h5",
+                                                                        children: ["Shared Key", null, null]
+                                                                    })
+                                                                })
+                                                        })
+                                                }),
+                                            ]
+                                        }),
+                                        formItems
+                                    ]
+                                })
+                        })
+                    ]
+                });
+            })
         }
 
         observer(e) {
