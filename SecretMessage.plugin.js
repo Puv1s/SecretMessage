@@ -106,6 +106,15 @@ module.exports = (() => {
                 </div>
             </button>
         </div>
+        <div class="buttonContainer-28fw2U da-buttonContainer secretMessage-image-button">
+            <button aria-label="Send Secret Message" tabindex="0" type="button" class="buttonWrapper-1ZmCpA da-buttonWrapper button-38aScr da-button lookBlank-3eh9lL colorBrand-3pXr91 grow-q77ONN da-grow noFocus-2C7BQj da-noFocus">
+                <div class="contents-18-Yxp da-contents button-3AYNKb da-button button-318s1X da-button">
+                    <svg aria-hidden="false" width="36" height="36" viewBox="0 0 24 24">
+                        <path fill="currentColor" fill-rule="evenodd" d="M1.75 2.5a.25.25 0 0 0-.25.25v10.5c0 .138.112.25.25.25h.94a.76.76 0 0 1 .03-.03l6.077-6.078a1.75 1.75 0 0 1 2.412-.06L14.5 10.31V2.75a.25.25 0 0 0-.25-.25H1.75zm12.5 11H4.81l5.048-5.047a.25.25 0 0 1 .344-.009l4.298 3.889v.917a.25.25 0 0 1-.25.25zm1.75-.25V2.75A1.75 1.75 0 0 0 14.25 1H1.75A1.75 1.75 0 0 0 0 2.75v10.5C0 14.216.784 15 1.75 15h12.5A1.75 1.75 0 0 0 16 13.25zM5.5 6a.5.5 0 1 1-1 0a.5.5 0 0 1 1 0zM7 6a2 2 0 1 1-4 0a2 2 0 0 1 4 0z"/>
+                    </svg>
+                </div>
+            </button>
+        </div>
         <div class="buttonContainer-28fw2U da-buttonContainer secretMessage-settings-button">
             <button aria-label="Send Secret Message" tabindex="0" type="button" class="buttonWrapper-1ZmCpA da-buttonWrapper button-38aScr da-button lookBlank-3eh9lL colorBrand-3pXr91 grow-q77ONN da-grow noFocus-2C7BQj da-noFocus">
                 <div class="contents-18-Yxp da-contents button-3AYNKb da-button button-318s1X da-button">
@@ -165,7 +174,8 @@ module.exports = (() => {
     `;
 
     const {DiscordModules: {React, DiscordConstants, Events}, ReactComponents, DiscordModules, DiscordSelectors, PluginUtilities, DOMTools, Logger, WebpackModules, Patcher} = Api;
-
+    const {Buffer} = require("buffer");
+    
     const FileUploadModule = BdApi.findModuleByProps("upload", "instantBatchUpload");
     const Dispatcher = BdApi.findModuleByProps("dispatch", "subscribe");
     const SendMessageModule = BdApi.findModuleByProps("sendMessage");
@@ -187,6 +197,7 @@ module.exports = (() => {
     const zwsCharacters = ["\u034F", "\u180e", "\u200b", "\u200c", "\u200d"];
     let nodecrypto = require('crypto');
     let machineUuid = require("machine-uuid");
+    let req = require("request");
 
     class CompressExtensions{
 
@@ -393,17 +404,18 @@ module.exports = (() => {
     }
 
     class FileUtils{
-        static createFile(text, prefix){
-            return new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4, 0x89, 0x00, 0x00, 0x00, 0x0a, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0x00, 0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0d, 0x0a, 0x2d, 0xb4, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82, 
-                ...new TextEncoder().encode(prefix + text)]).buffer], 'SecretMessageFile.png', {type: 'image/png'})
+        static createFile(text){
+            return new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4, 0x89, 0x00, 0x00, 0x00, 0x0a, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0x00, 0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0d, 0x0a, 0x2d, 0xb4, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 
+                ...new TextEncoder().encode(text)]).buffer], 'SecretMessageFile.png', {type: 'image/png'})
         }
 
-        static extractFromFile(file, prefix){
-            return Buffer.from(file).slice(67).replace(prefix, '').toString();
+        static extractFromFile(file){
+            return Buffer.from(file).slice(73).toString();
         }
 
-        static fileUpload(channelId, file, message){
-            FileUploadModule.upload(channelId, file, message, false, file.name)
+        static fileUpload(channelId, message, encmessage){
+            let file = this.createFile(encmessage);
+            FileUploadModule.upload(channelId, file, null, {content: message}, false, file.name)
         }
     }
 
@@ -431,7 +443,6 @@ module.exports = (() => {
                 if(!(ChannelStore.getChannel(channelId).type == 1)) {
                      Crypto.handlePublicKey(channelId, e.message.content, e.message.author.username, true);
                 }
-                   
                 Crypto.handlePublicKey(channelId, e.message.content, e.message.author.username, false);
             }
             catch(err){
@@ -445,6 +456,29 @@ module.exports = (() => {
            try{
                 let key = database.keys[prop.message.channel_id];   
                 if(!key) return;
+                if(prop.message.attachments.length > 0 && prop.message.attachments[0].filename == 'SecretMessageFile.png'){
+                    req.get(prop.message.attachments[0].url, async (error, response, body) => {
+                        if (error) return;
+                        else{
+                            let content = FileUtils.extractFromFile(body);
+                            let decrypt;
+                            try {
+                                decrypt = Crypto.decrypt(key, content);
+
+                            } catch (err) { console.log(err); return } // Ignore errors such as non empty
+
+                            if(prop.message.content == ''){
+                                e[0].content[0] = '🔐 ' + decrypt;  //doesnt work
+                                prop.message.content = '🔐 ' + decrypt;  //works
+                            }
+                            else{
+                                e[0].content[0] = e[0].content[0] + '\n🔐 ' + decrypt; //doesnt work
+                                prop.message.content = prop.message.content + '\n🔐 ' + decrypt; //works
+                            }
+                            prop.message.attachments = [];
+                        }
+                    });
+                }
                 if (typeof e[0].content[0] !== 'string') return;
                 if (!e[0].content[0].startsWith('$:')) return;
                 let decrypt;
@@ -467,6 +501,32 @@ module.exports = (() => {
             message.content = Crypto.encrypt(key, content);
         }
     }
+
+    class SlateTextArea {
+        static parser = ZLibrary.WebpackModules.find(m => m.deserialize && !m.add);
+        static textAreaClassName = ZLibrary.WebpackModules.getByProps("textAreaHeight", "channelTextArea", "highlighted").textArea;
+        
+        static get instance() {return ZLibrary.ReactTools.getOwnerInstance(document.getElementsByClassName(this.textAreaClassName)[0]);}
+    
+        static getValue() {
+            const textAreaInstance = this.instance;
+            if (!textAreaInstance) return "";
+            return this.parser.serialize(ZLibrary.Utilities.getNestedProp(textAreaInstance, "editorRef.props.value")) || "";
+        }
+    
+        static setValue(value) {
+            const textAreaInstance = this.instance;
+    
+            if (!this.instance) return false;
+    
+            try {
+                textAreaInstance.setValue(this.parser.deserialize(value));
+                return true;
+            } catch (error) {
+                return false;
+            }
+        }
+    }
     
     const userMentionPattern = new RegExp(`<@!?([0-9]{10,})>`, 'g');
     const roleMentionPattern = new RegExp(`<@&([0-9]{10,})>`, 'g');
@@ -485,6 +545,7 @@ module.exports = (() => {
     return class SecretMessage extends Plugin {
 
         async onStart() {
+            console.log(WebpackModules.find(m => m.type?.displayName === "MessageContent"));
             let uuid = await machineUuid();
             await Crypto.loadDatabase(Crypto.sha256(uuid).toString('hex'));
             Patcher.before(MessageComponent, "type", patchRender);
@@ -518,11 +579,20 @@ module.exports = (() => {
             const encryptButton = form.querySelector(".secretMessage-encrypt-button");
             const exchangeButton = form.querySelector(".secretMessage-exchange-button");
             const settingsButton = form.querySelector(".secretMessage-settings-button");
+            const imageButton = form.querySelector(".secretMessage-image-button");
 
             if(EncryptionEnabled) encryptButton.addClass("secretMessage-button-enabled");
 
             settingsButton.addEventListener("click", () => {
                 this.openSettingsModal();
+            });
+
+            imageButton.addEventListener("click", () => {
+                let channelId = SelectedChannelStore.getChannelId();
+                const key = database.keys[channelId];
+                if(!EncryptionEnabled || !key) return;
+                FileUtils.fileUpload(channelId, '', Crypto.encrypt(key, SlateTextArea.getValue()));
+                SlateTextArea.setValue('');
             });
 
             encryptButton.addEventListener("click", (e) => {
